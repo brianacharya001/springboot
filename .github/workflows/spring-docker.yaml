@@ -1,5 +1,4 @@
 # CI: Build, Test, Package and Run Spring Boot (Maven + Java 21)
-# Put this file at: .github/workflows/ci.yml
 name: spring-docker
 
 on:
@@ -32,7 +31,6 @@ jobs:
       - name: Start Spring Boot app in background (working dir: demo)
         working-directory: demo
         run: |
-          # Start app; write log and pid into the demo directory
           nohup mvn -DskipTests spring-boot:run > app.log 2>&1 &
           echo $! > app.pid
         timeout-minutes: 10
@@ -41,8 +39,6 @@ jobs:
         env:
           HEALTH_URL: http://localhost:8080/actuator/health
         run: |
-          # Try the actuator health endpoint by default. If you don't have actuator,
-          # change HEALTH_URL to a valid endpoint (e.g., http://localhost:8080/).
           for i in $(seq 1 30); do
             if curl -sSf "${HEALTH_URL}" >/dev/null 2>&1; then
               echo "Application is up"
@@ -51,14 +47,10 @@ jobs:
             echo "Waiting for application... ($i/30)"
             sleep 2
           done
-          echo "Application failed to start. Showing app log:"
-          sed -n '1,200p' demo/app.log || true
           exit 1
 
       - name: Smoke test
-        run: |
-          # adjust endpoint/path as needed for your app
-          curl -v http://localhost:8080/ || true
+        run: curl -v http://localhost:8080/ || true
 
       - name: Save app log (artifact)
         if: always()
@@ -66,11 +58,10 @@ jobs:
         with:
           name: app-log
           path: demo/app.log
-      - name: Build Docker Image
-        run: |
-          docker build -t my-spring-app:latest .
 
-      # Optional: Log in and push to GitHub Container Registry (GHCR)
+      - name: Build Docker Image
+        run: docker build -t my-spring-app:latest .
+
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
         with:
@@ -92,4 +83,3 @@ jobs:
           else
             pkill -f org.springframework.boot || true
           fi
-          
