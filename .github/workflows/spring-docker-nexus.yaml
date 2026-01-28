@@ -1,0 +1,97 @@
+name: spring-docker-nexus
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  pull_request: {}
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build-and-run:
+    runs-on: self-hosted
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+
+      - name: Maven test
+        working-directory: demo
+        run: mvn -B -V clean verify
+
+      - name: Maven package
+        working-directory: demo
+        run: mvn -B -DskipTests package
+
+      - name: Start app
+        working-directory: demo
+        shell: bash
+        run: |
+          rm -f app.pid app.log
+          nohup mvn -B -DskipTests spring-boot:run > app.log 2>&1 &
+          echo $! > app.pid
+
+      - name: Wait for health
+        shell: bash
+        run: |
+          HEALTH_URL="http://localhost:8080/actuator/health"
+          for i in $(seq 1 60); do
+            if curl -fsS "$HEALTH_URL" >/dev/null; then
+              echo "Application is up"
+              exit 0
+            fi
+            echo "Waiting... ($i/60)"
+            sleep 2
+          done
+          echo "App failed to start"
+          tail -n 200 demo/app.log || true
+          exit 1
+
+      - name: Smoke test
+        run: curl -v http://localhost:8080/
+
+      - name: Upload app log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-log
+          path: demo/app.log
+          if-no-files-found: warn
+
+      - name: Docker build
+        working-directory: demo
+        run: docker build -t my-spring-app:latest .
+
+      - name: Login GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push GHCR
+        shell: bash
+        run: |
+          IMAGE="ghcr.io/${{ github.repository_owner }}/my-spring-app"
+          IMAGE_LC="$(echo "$IMAGE" | tr '[:upper:]' '[:lower:]')"
+          docker tag my-spring-app:latest "$IMAGE_LC:latest"
+          docker push "$IMAGE_LC:latest"
+
+      - name: Stop app
+        if: always()
+        shell: bash
+        run: |
+          if [ -f demo/app.pid ]; then
+            kill "$(cat demo/app.pid)" || true
+          fi
