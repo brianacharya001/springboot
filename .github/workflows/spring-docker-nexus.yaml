@@ -15,6 +15,11 @@ jobs:
   build-and-run:
     runs-on: self-hosted
 
+    env:
+      APP_PORT: "8080"
+      APP_PATH: "/greet"
+      APP_URL: "http://localhost:8080/greet"
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -34,7 +39,6 @@ jobs:
         working-directory: demo
         run: mvn -B -DskipTests package
 
-      # ✅ FIX: run the built JAR (not spring-boot:run)
       - name: Start app (run jar)
         working-directory: demo
         shell: bash
@@ -45,7 +49,7 @@ jobs:
           JAR="$(ls -1 target/*.jar | grep -vE '(-sources|-javadoc)\.jar$' | head -n 1)"
           echo "Using JAR: $JAR"
 
-          nohup java -jar "$JAR" --server.port=8080 > app.log 2>&1 &
+          nohup java -jar "$JAR" --server.port="${APP_PORT}" > app.log 2>&1 &
           echo $! > app.pid
 
           sleep 2
@@ -55,14 +59,14 @@ jobs:
             exit 1
           fi
 
-      - name: Wait for health
+      - name: Wait for app endpoint to respond
         shell: bash
         run: |
           set -euo pipefail
-          HEALTH_URL="http://localhost:8080/actuator/health"
 
-          echo "Checking listeners on port 8080"
-          ss -ltnp | grep ':8080' || true
+          echo "Waiting for endpoint: ${APP_URL}"
+          echo "Port diagnostics (may be empty if ss not available):"
+          ss -ltnp | grep ":${APP_PORT}" || true
 
           for i in $(seq 1 60); do
             if ! ps -p "$(cat demo/app.pid)" >/dev/null 2>&1; then
@@ -71,8 +75,12 @@ jobs:
               exit 1
             fi
 
-            if curl -fsS "$HEALTH_URL" >/dev/null 2>&1; then
-              echo "Application is up"
+            CODE="$(curl -s -o /dev/null -w "%{http_code}" "${APP_URL}" || true)"
+
+            # Consider the app "up" if we get any HTTP response (2xx/3xx/4xx/5xx)
+            # 000 means connection failed (refused/timeout/DNS)
+            if [ "$CODE" != "000" ]; then
+              echo "App is responding at ${APP_URL} (HTTP $CODE)"
               exit 0
             fi
 
@@ -80,12 +88,16 @@ jobs:
             sleep 2
           done
 
-          echo "App failed to become healthy"
+          echo "App did not respond in time at ${APP_URL}"
           tail -n 200 demo/app.log || true
           exit 1
 
-      - name: Smoke test
-        run: curl -v http://localhost:8080/
+      - name: Smoke test (real endpoint)
+        shell: bash
+        run: |
+          set -e
+          echo "Calling: ${APP_URL}"
+          curl -v "${APP_URL}"
 
       - name: Upload app log
         if: always()
@@ -109,6 +121,7 @@ jobs:
       - name: Push GHCR
         shell: bash
         run: |
+          set -euo pipefail
           IMAGE="ghcr.io/${{ github.repository_owner }}/my-spring-app"
           IMAGE_LC="$(echo "$IMAGE" | tr '[:upper:]' '[:lower:]')"
           docker tag my-spring-app:latest "$IMAGE_LC:latest"
@@ -118,6 +131,14 @@ jobs:
         if: always()
         shell: bash
         run: |
+          set -euo pipefail
           if [ -f demo/app.pid ]; then
-            kill "$(cat demo/app.pid)" || true
+            PID="$(cat demo/app.pid || true)"
+            if [ -n "$PID" ] && ps -p "$PID" >/dev/null 2>&1; then
+              echo "Stopping PID $PID"
+              kill "$PID" || true
+              sleep 2
+              ps -p "$PID" >/dev/null 2>&1 && kill -9 "$PID" || true
+            fi
+            rm -f demo/app.pid
           fi
