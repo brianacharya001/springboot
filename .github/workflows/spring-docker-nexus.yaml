@@ -34,27 +34,53 @@ jobs:
         working-directory: demo
         run: mvn -B -DskipTests package
 
-      - name: Start app
+      # ✅ FIX: run the built JAR (not spring-boot:run)
+      - name: Start app (run jar)
         working-directory: demo
         shell: bash
         run: |
+          set -euo pipefail
           rm -f app.pid app.log
-          nohup mvn -B -DskipTests spring-boot:run > app.log 2>&1 &
+
+          JAR="$(ls -1 target/*.jar | grep -vE '(-sources|-javadoc)\.jar$' | head -n 1)"
+          echo "Using JAR: $JAR"
+
+          nohup java -jar "$JAR" --server.port=8080 > app.log 2>&1 &
           echo $! > app.pid
+
+          sleep 2
+          if ! ps -p "$(cat app.pid)" >/dev/null 2>&1; then
+            echo "Application exited early"
+            tail -n 200 app.log || true
+            exit 1
+          fi
 
       - name: Wait for health
         shell: bash
         run: |
+          set -euo pipefail
           HEALTH_URL="http://localhost:8080/actuator/health"
+
+          echo "Checking listeners on port 8080"
+          ss -ltnp | grep ':8080' || true
+
           for i in $(seq 1 60); do
-            if curl -fsS "$HEALTH_URL" >/dev/null; then
+            if ! ps -p "$(cat demo/app.pid)" >/dev/null 2>&1; then
+              echo "App process died"
+              tail -n 200 demo/app.log || true
+              exit 1
+            fi
+
+            if curl -fsS "$HEALTH_URL" >/dev/null 2>&1; then
               echo "Application is up"
               exit 0
             fi
+
             echo "Waiting... ($i/60)"
             sleep 2
           done
-          echo "App failed to start"
+
+          echo "App failed to become healthy"
           tail -n 200 demo/app.log || true
           exit 1
 
