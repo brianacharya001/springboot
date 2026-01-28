@@ -1,0 +1,78 @@
+# CI: Build, Test, Package and Run Spring Boot (Maven + Java 21)
+# Put this file at: .github/workflows/ci.yml
+name: Java CI - Maven (Java 21)
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+
+jobs:
+  build-and-run:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21 and cache Maven deps
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: 'maven'
+
+      - name: Build and run tests (working dir: demo)
+        working-directory: demo
+        run: mvn -B -V clean verify
+
+      - name: Package (skip tests) (working dir: demo)
+        working-directory: demo
+        run: mvn -B -DskipTests package
+
+      - name: Start Spring Boot app in background (working dir: demo)
+        working-directory: demo
+        run: |
+          # Start app; write log and pid into the demo directory
+          nohup mvn -DskipTests spring-boot:run > app.log 2>&1 &
+          echo $! > app.pid
+        timeout-minutes: 10
+
+      - name: Wait for app to become healthy
+        env:
+          HEALTH_URL: http://localhost:8080/actuator/health
+        run: |
+          # Try the actuator health endpoint by default. If you don't have actuator,
+          # change HEALTH_URL to a valid endpoint (e.g., http://localhost:8080/).
+          for i in $(seq 1 30); do
+            if curl -sSf "${HEALTH_URL}" >/dev/null 2>&1; then
+              echo "Application is up"
+              exit 0
+            fi
+            echo "Waiting for application... ($i/30)"
+            sleep 2
+          done
+          echo "Application failed to start. Showing app log:"
+          sed -n '1,200p' demo/app.log || true
+          exit 1
+
+      - name: Smoke test
+        run: |
+          # adjust endpoint/path as needed for your app
+          curl -v http://localhost:8080/ || true
+
+      - name: Save app log (artifact)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-log
+          path: demo/app.log
+
+      - name: Stop Spring Boot app
+        if: always()
+        run: |
+          if [ -f demo/app.pid ]; then
+            kill "$(cat demo/app.pid)" || true
+            rm -f demo/app.pid
+          else
+            pkill -f org.springframework.boot || true
+          fi
