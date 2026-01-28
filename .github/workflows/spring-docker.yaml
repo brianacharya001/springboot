@@ -37,45 +37,33 @@ jobs:
         working-directory: demo
         run: mvn -B -DskipTests package
 
-      - name: Start Spring Boot app in background (working dir: demo)
+      - name: Start Spring Boot app in background
         working-directory: demo
         shell: bash
         run: |
-          set -euo pipefail
           rm -f app.pid app.log
-
-          # Run app in background
           nohup mvn -B -DskipTests spring-boot:run > app.log 2>&1 &
           echo $! > app.pid
-
-          echo "Started app with PID $(cat app.pid)"
-          # quick sanity that process exists
-          ps -p "$(cat app.pid)" >/dev/null
 
       - name: Wait for app to become healthy
         shell: bash
         env:
           HEALTH_URL: http://localhost:8080/actuator/health
         run: |
-          set -euo pipefail
           for i in $(seq 1 60); do
-            if curl -fsS "${HEALTH_URL}" >/dev/null 2>&1; then
+            if curl -fsS "$HEALTH_URL" >/dev/null; then
               echo "Application is up"
               exit 0
             fi
-            echo "Waiting for application... ($i/60)"
+            echo "Waiting... ($i/60)"
             sleep 2
           done
-
-          echo "App did not become healthy in time. Last 200 lines of log:"
+          echo "App failed to start"
           tail -n 200 demo/app.log || true
           exit 1
 
       - name: Smoke test
-        shell: bash
-        run: |
-          set -e
-          curl -v http://localhost:8080/
+        run: curl -v http://localhost:8080/
 
       - name: Save app log (artifact)
         if: always()
@@ -83,10 +71,7 @@ jobs:
         with:
           name: app-log
           path: demo/app.log
-          if-no-files-found: warn
 
-      # If your Dockerfile is inside demo/, this MUST run from demo.
-      # If your Dockerfile is in repo root and copies from demo/, keep working-directory as repo root.
       - name: Build Docker Image
         working-directory: demo
         run: docker build -t my-spring-app:latest .
@@ -100,29 +85,16 @@ jobs:
 
       - name: Push to GHCR
         shell: bash
-        env:
-          IMAGE: ghcr.io/${{ github.repository_owner }}/my-spring-app
         run: |
-          set -euo pipefail
-
-          # GHCR requires lowercase image names
-          IMAGE_LC="$(echo "${IMAGE}" | tr '[:upper:]' '[:lower:]')"
-
-          docker tag my-spring-app:latest "${IMAGE_LC}:latest"
-          docker push "${IMAGE_LC}:latest"
+          IMAGE=ghcr.io/${{ github.repository_owner }}/my-spring-app
+          IMAGE_LC=$(echo "$IMAGE" | tr '[:upper:]' '[:lower:]')
+          docker tag my-spring-app:latest "$IMAGE_LC:latest"
+          docker push "$IMAGE_LC:latest"
 
       - name: Stop Spring Boot app
         if: always()
         shell: bash
         run: |
-          set -euo pipefail
           if [ -f demo/app.pid ]; then
-            PID="$(cat demo/app.pid || true)"
-            if [ -n "${PID}" ] && ps -p "${PID}" >/dev/null 2>&1; then
-              echo "Stopping PID ${PID}"
-              kill "${PID}" || true
-              sleep 3
-              ps -p "${PID}" >/dev/null 2>&1 && kill -9 "${PID}" || true
-            fi
-            rm -f demo/app.pid
+            kill "$(cat demo/app.pid)" || true
           fi
