@@ -1,6 +1,6 @@
 # CI: Build, Test, Package and Run Spring Boot (Maven + Java 21)
 # Put this file at: .github/workflows/ci.yml
-name: Java CI - Maven (Java 21)
+name: spring-docker
 
 on:
   push:
