@@ -5,7 +5,7 @@ on:
     branches:
       - main
       - master
-  pull_request: {}
+  pull_request:
 
 permissions:
   contents: read
@@ -14,11 +14,6 @@ permissions:
 jobs:
   build-and-run:
     runs-on: self-hosted
-
-    env:
-      APP_PORT: "8080"
-      APP_PATH: "/greet"
-      APP_URL: "http://localhost:8080/greet"
 
     steps:
       - name: Checkout
@@ -39,7 +34,7 @@ jobs:
         working-directory: demo
         run: mvn -B -DskipTests package
 
-      - name: Start app (run jar)
+      - name: Start app
         working-directory: demo
         shell: bash
         run: |
@@ -49,7 +44,7 @@ jobs:
           JAR="$(ls -1 target/*.jar | grep -vE '(-sources|-javadoc)\.jar$' | head -n 1)"
           echo "Using JAR: $JAR"
 
-          nohup java -jar "$JAR" --server.port="${APP_PORT}" > app.log 2>&1 &
+          nohup java -jar "$JAR" --server.port=8080 > app.log 2>&1 &
           echo $! > app.pid
 
           sleep 2
@@ -59,14 +54,11 @@ jobs:
             exit 1
           fi
 
-      - name: Wait for app endpoint to respond
+      - name: Wait for real endpoint
         shell: bash
         run: |
           set -euo pipefail
-
-          echo "Waiting for endpoint: ${APP_URL}"
-          echo "Port diagnostics (may be empty if ss not available):"
-          ss -ltnp | grep ":${APP_PORT}" || true
+          URL="http://localhost:8080/greet"
 
           for i in $(seq 1 60); do
             if ! ps -p "$(cat demo/app.pid)" >/dev/null 2>&1; then
@@ -75,12 +67,9 @@ jobs:
               exit 1
             fi
 
-            CODE="$(curl -s -o /dev/null -w "%{http_code}" "${APP_URL}" || true)"
-
-            # Consider the app "up" if we get any HTTP response (2xx/3xx/4xx/5xx)
-            # 000 means connection failed (refused/timeout/DNS)
+            CODE="$(curl -s -o /dev/null -w "%{http_code}" "$URL" || true)"
             if [ "$CODE" != "000" ]; then
-              echo "App is responding at ${APP_URL} (HTTP $CODE)"
+              echo "App is responding at $URL (HTTP $CODE)"
               exit 0
             fi
 
@@ -88,16 +77,15 @@ jobs:
             sleep 2
           done
 
-          echo "App did not respond in time at ${APP_URL}"
+          echo "App did not respond in time"
           tail -n 200 demo/app.log || true
           exit 1
 
-      - name: Smoke test (real endpoint)
+      - name: Smoke test
         shell: bash
         run: |
           set -e
-          echo "Calling: ${APP_URL}"
-          curl -v "${APP_URL}"
+          curl -v "http://localhost:8080/greet"
 
       - name: Upload app log
         if: always()
@@ -131,14 +119,6 @@ jobs:
         if: always()
         shell: bash
         run: |
-          set -euo pipefail
           if [ -f demo/app.pid ]; then
-            PID="$(cat demo/app.pid || true)"
-            if [ -n "$PID" ] && ps -p "$PID" >/dev/null 2>&1; then
-              echo "Stopping PID $PID"
-              kill "$PID" || true
-              sleep 2
-              ps -p "$PID" >/dev/null 2>&1 && kill -9 "$PID" || true
-            fi
-            rm -f demo/app.pid
+            kill "$(cat demo/app.pid)" || true
           fi
