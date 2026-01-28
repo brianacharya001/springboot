@@ -26,29 +26,35 @@ jobs:
           java-version: "21"
           cache: maven
 
-      - name: Show structure (debug)
+      - name: Debug structure
         shell: bash
         run: |
           set -e
+          echo "ROOT:"
           pwd
           ls -la
-          test -f pom.xml
-          test -f Dockerfile
-          echo "pom.xml and Dockerfile found at repo root"
+          echo "DEMO:"
+          ls -la demo
+          echo "Find pom.xml:"
+          find . -maxdepth 3 -name pom.xml -print
+          echo "Find Dockerfile:"
+          find . -maxdepth 3 -name Dockerfile -print
 
-      - name: Maven test
+      - name: Maven test (demo)
+        working-directory: demo
         run: mvn -B -V clean verify
 
-      - name: Maven package
+      - name: Maven package (demo)
+        working-directory: demo
         run: mvn -B -DskipTests package
 
-      - name: Start app (run jar)
+      - name: Start app (run jar from demo)
         shell: bash
         run: |
           set -euo pipefail
           rm -f app.pid app.log
 
-          JAR="$(ls -1 target/*.jar | grep -vE '(-sources|-javadoc)\.jar$' | head -n 1)"
+          JAR="$(ls -1 demo/target/*.jar | grep -vE '(-sources|-javadoc)\.jar$' | head -n 1)"
           echo "Using JAR: $JAR"
 
           nohup java -jar "$JAR" --server.port=8080 > app.log 2>&1 &
@@ -102,10 +108,11 @@ jobs:
           path: app.log
           if-no-files-found: warn
 
-      - name: Docker build (Dockerfile at repo root)
+      - name: Docker build (root Dockerfile, context = repo)
         shell: bash
         run: |
           set -euo pipefail
+          test -f Dockerfile
           docker build -t my-spring-app:latest -f Dockerfile .
 
       - name: Login GHCR
