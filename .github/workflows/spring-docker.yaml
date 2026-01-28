@@ -6,9 +6,18 @@ on:
     branches: [ main, master ]
   pull_request:
 
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: spring-docker-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build-and-run:
     runs-on: self-hosted
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -17,8 +26,8 @@ jobs:
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '21'
-          cache: 'maven'
+          java-version: "21"
+          cache: maven
 
       - name: Build and run tests (working dir: demo)
         working-directory: demo
@@ -30,27 +39,43 @@ jobs:
 
       - name: Start Spring Boot app in background (working dir: demo)
         working-directory: demo
+        shell: bash
         run: |
-          nohup mvn -DskipTests spring-boot:run > app.log 2>&1 &
+          set -euo pipefail
+          rm -f app.pid app.log
+
+          # Run app in background
+          nohup mvn -B -DskipTests spring-boot:run > app.log 2>&1 &
           echo $! > app.pid
-        timeout-minutes: 10
+
+          echo "Started app with PID $(cat app.pid)"
+          # quick sanity that process exists
+          ps -p "$(cat app.pid)" >/dev/null
 
       - name: Wait for app to become healthy
+        shell: bash
         env:
           HEALTH_URL: http://localhost:8080/actuator/health
         run: |
-          for i in $(seq 1 30); do
-            if curl -sSf "${HEALTH_URL}" >/dev/null 2>&1; then
+          set -euo pipefail
+          for i in $(seq 1 60); do
+            if curl -fsS "${HEALTH_URL}" >/dev/null 2>&1; then
               echo "Application is up"
               exit 0
             fi
-            echo "Waiting for application... ($i/30)"
+            echo "Waiting for application... ($i/60)"
             sleep 2
           done
+
+          echo "App did not become healthy in time. Last 200 lines of log:"
+          tail -n 200 demo/app.log || true
           exit 1
 
       - name: Smoke test
-        run: curl -v http://localhost:8080/ || true
+        shell: bash
+        run: |
+          set -e
+          curl -v http://localhost:8080/
 
       - name: Save app log (artifact)
         if: always()
@@ -58,8 +83,12 @@ jobs:
         with:
           name: app-log
           path: demo/app.log
+          if-no-files-found: warn
 
+      # If your Dockerfile is inside demo/, this MUST run from demo.
+      # If your Dockerfile is in repo root and copies from demo/, keep working-directory as repo root.
       - name: Build Docker Image
+        working-directory: demo
         run: docker build -t my-spring-app:latest .
 
       - name: Log in to GitHub Container Registry
@@ -70,16 +99,30 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Push to GHCR
+        shell: bash
+        env:
+          IMAGE: ghcr.io/${{ github.repository_owner }}/my-spring-app
         run: |
-          docker tag my-spring-app:latest ghcr.io/${{ github.repository }}:latest
-          docker push ghcr.io/${{ github.repository }}:latest
+          set -euo pipefail
+
+          # GHCR requires lowercase image names
+          IMAGE_LC="$(echo "${IMAGE}" | tr '[:upper:]' '[:lower:]')"
+
+          docker tag my-spring-app:latest "${IMAGE_LC}:latest"
+          docker push "${IMAGE_LC}:latest"
 
       - name: Stop Spring Boot app
         if: always()
+        shell: bash
         run: |
+          set -euo pipefail
           if [ -f demo/app.pid ]; then
-            kill "$(cat demo/app.pid)" || true
+            PID="$(cat demo/app.pid || true)"
+            if [ -n "${PID}" ] && ps -p "${PID}" >/dev/null 2>&1; then
+              echo "Stopping PID ${PID}"
+              kill "${PID}" || true
+              sleep 3
+              ps -p "${PID}" >/dev/null 2>&1 && kill -9 "${PID}" || true
+            fi
             rm -f demo/app.pid
-          else
-            pkill -f org.springframework.boot || true
           fi
